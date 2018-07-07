@@ -6,3 +6,6 @@ This repository was built with the objective of studying the effects of dopage i
 Tausworthe Generator (TG) is a kind of multiplicative recursive generator which produces random bits. It has the following form:
 
 <a href="https://www.codecogs.com/eqnedit.php?latex=x_{n&plus;1}&space;=&space;(A_{1}x_{n}&space;&plus;&space;A_{2}x_{n-1}&space;&plus;&space;\cdots&space;&plus;&space;A_{k}x_{n-k&plus;1})\mod{2}" target="_blank"><img src="https://latex.codecogs.com/gif.latex?x_{n&plus;1}&space;=&space;(A_{1}x_{n}&space;&plus;&space;A_{2}x_{n-1}&space;&plus;&space;\cdots&space;&plus;&space;A_{k}x_{n-k&plus;1})\mod{2}" title="x_{n+1} = (A_{1}x_{n} + A_{2}x_{n-1} + \cdots + A_{k}x_{n-k+1})\mod{2}" /></a>
+
+where <img src="https://latex.codecogs.com/gif.latex?\inline&space;x_{i},&space;A_{i}\in&space;\left&space;\{&space;0,1&space;\right&space;\}\hspace{0.2cm}\forall&space;i" title="x_{i}, A_{i}\in \left \{ 0,1 \right \}\hspace{0.2cm}\forall i" />
+
