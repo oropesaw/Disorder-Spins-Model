@@ -9,3 +9,4 @@ Tausworthe Generator (TG) is a kind of multiplicative recursive generator which 
 
 where <img src="https://latex.codecogs.com/gif.latex?\inline&space;x_{i},&space;A_{i}\in&space;\left&space;\{&space;0,1&space;\right&space;\}\hspace{0.2cm}\forall&space;i" title="x_{i}, A_{i}\in \left \{ 0,1 \right \}\hspace{0.2cm}\forall i" />
 
+The theory behind TG is related to irreducible primitive polynomials over GF(2). A polynomial over Galois field of order 2 (GF(2)) is a polynomial whose coefficients are either 0 and 1. Such a polynomial is irreducible primitive if it does not have nontrivial factors like 1 and has order of
