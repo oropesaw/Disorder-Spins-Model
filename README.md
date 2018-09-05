@@ -1,4 +1,4 @@
-# Potts Model
+# Disorder Spins Model
 This repository was built with the objective of studying the effects of dopage in the family of compounds of Cerium
 ##  Random Number Generators
 
