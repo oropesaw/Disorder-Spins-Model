@@ -17,3 +17,5 @@ Since TG only produces bits, it is too slow to be useful. A technique to speed u
 
 ![generator](https://user-images.githubusercontent.com/37848611/45119102-cbc48280-b130-11e8-8289-d338e1283dc6.jpeg)
 ![table](https://user-images.githubusercontent.com/37848611/45119358-9ff5cc80-b131-11e8-821d-4d0efe2287ae.jpeg)
+![rr](https://user-images.githubusercontent.com/37848611/45119408-c74c9980-b131-11e8-9aee-98fe45e9b2ef.jpeg)
+
