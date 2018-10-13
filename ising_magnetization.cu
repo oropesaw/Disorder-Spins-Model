@@ -128,34 +128,37 @@ __global__ void runMetropolis(int *seeds, int* spins, unsigned* neighbors, unsig
 	int E_after  = 0;
 
 	for(int n=0; n<2*D; n++){
-
-		E_before += H * spinstate;
 		
 		if(n != 4 && n != 5)
 			E_before += J_IN * spinstate * nb[n];
 		else{
 
-			if (conex || nl[5])
+			if (n == 4 && conex)
+				E_before += J_PB * spinstate * nb[n];
+			else if (n == 5 && nl[5])
 				E_before += J_PB * spinstate * nb[n];
 			else
 				E_before += J_OU * spinstate * nb[n];
 		}
 
-		E_after  += H * newstate;
-
 		if(n != 4 && n != 5)
 			E_after += J_IN * newstate * nb[n];
 		else{
 
-			if (conex || nl[5])
+			if (n == 4 && conex)
 				E_after += J_PB * newstate * nb[n];
+			else if (n == 5 && nl[5])
+				E_before += J_PB * newstate * nb[n];
 			else
 				E_after += J_OU * newstate * nb[n];
 		}
 	}
 
+	E_before += H * spinstate;
+	E_after  += H * newstate;
+
 	// acceptance probability:
-	int dE = E_before - E_after;
+	float dE = __int2float_rn(E_before - E_after);
 	float pAccept = __expf(-beta*dE);
 
 	if(TauswortheLCRNG(z1, z2, z3, z) <= pAccept)
@@ -420,7 +423,9 @@ int main(int argc, char const **argv){
 			
 			else{
 				
-				if(contrt[i] || contrt[neighbors[2*D*i + j]])
+				if(j == 4 && contrt[i])
+					E -= J_PB * spins[i] * spins[neighbors[2*D*i + j]];
+				else if (j == 5 && contrt[neighbors[2*D*i + j]])
 					E -= J_PB * spins[i] * spins[neighbors[2*D*i + j]];
 				else
 					E -= J_OU * spins[i] * spins[neighbors[2*D*i + j]];
@@ -429,6 +434,7 @@ int main(int argc, char const **argv){
 	}
 
 	E /= 2; // count each interaction only once
+
 
 
 	int E_before_simulation = E;
