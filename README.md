@@ -20,4 +20,4 @@ Since TG only produces bits, it is too slow to be useful. A technique to speed u
 ## Metropolis algorithm
 ![table](https://user-images.githubusercontent.com/37848611/45119358-9ff5cc80-b131-11e8-821d-4d0efe2287ae.jpeg)
 ![rr](https://user-images.githubusercontent.com/37848611/45119408-c74c9980-b131-11e8-9aee-98fe45e9b2ef.jpeg)
-
+ 
