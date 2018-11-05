@@ -1,22 +1,25 @@
 #include <iostream>
-#include <fstream>
 #include <cstdlib>
+#include <fstream>
 #include <ctime>
 #include <cmath>
 
-#define L 8  	// lattice length; must be even number!
+#define L 16	// lattice length; must be even number!
 #define D 3 	// dimensions
-#define N 512   // number of spins on square lattice (N=L^D)
-#define J_IN 	25.00
-#define J_OU 	100.00
-#define J_PB   -300.00
+#define N  4096 // number of spins on square lattice (N=L^D)
+#define Q 2 	// number of Potts states
+#define J_IN	10
+#define J_OUT	40
+#define J_EXT	-120
 #define N_SWEEPS	100000
 
-/* Distribute N/2 spins over threads and blocks:
+/* 
+Distribute N/2 spins over threads and blocks:
    since we do "black" and "white" spins seperately, we only need half the threads:
-   N_BLOCKS * N_THREADS_PER_BLOCK = N/2 */
-#define N_BLOCKS		8   // number of blocks
-#define N_THREADS_PER_BLOCK	32  // number of threads per block
+   N_BLOCKS * N_THREADS_PER_BLOCK = N/2 
+*/
+#define N_BLOCKS			64   // number of blocks
+#define N_THREADS_PER_BLOCK	32   // number of threads per block
 
 
 /*
@@ -75,18 +78,8 @@ __device__ float TauswortheLCRNG(unsigned &z1, unsigned &z2, unsigned &z3, unsig
 
 
 
-/* 
-Metropolis algorithm in the device. For this a decomposition was used in chessboard.
-
-Keyword Arguments:
-seeds: int * (random number generator seeds)
-spins: int * (spin list)
-neighbors: unsigned * (list of neighbors of a given spin)
-spinIdList: unsigned * (PONER QUE ES ESTO)
-*/
-
-__global__ void runMetropolis(int *seeds, int* spins, unsigned* neighbors, unsigned* spinIdList, 
-						int* energyDifferences, int* magnetization, bool* contrt, float beta, int H)
+__global__ void runMetropolis(int *seeds, unsigned short* spins, unsigned* neighbors, unsigned* spinIdList, 
+			int* energyDifferences, bool* contrt, int* magnetization, float beta, int H)
 {
 	const unsigned id = blockDim.x*blockIdx.x + threadIdx.x;
 
@@ -104,8 +97,8 @@ __global__ void runMetropolis(int *seeds, int* spins, unsigned* neighbors, unsig
 	__shared__ int blockSpins[N_THREADS_PER_BLOCK];
 	deltaE[threadIdx.x] = 0;
 
-	int spinstate = spins[spinId];	// get spin state from DRAM
-	int nb[2*D];						// neighbor states
+	unsigned short spinstate = spins[spinId];	// get spin state from DRAM
+	unsigned short nb[2*D];						// neighbor states
 
 	bool conex = contrt[spinId];
     bool nl[2 * D];
@@ -113,47 +106,58 @@ __global__ void runMetropolis(int *seeds, int* spins, unsigned* neighbors, unsig
 	
 	// get neighbor states:
 	for(unsigned n=0; n<2*D; n++){
-		nb[n] = spins[neighbors[2 * D * spinId + n]];
+		nb[n] = spins[neighbors[2*D*spinId + n]];
 		nl[n] = contrt[neighbors[2 * D * spinId + n]];
         
 	}
 
 	// propose random new spin state:
-	int newstate = - spinstate;
+	unsigned short newstate = floor(TauswortheLCRNG(z1, z2, z3, z) * Q);
 
 	// energy difference: E'-E
 	int E_before = 0;
 	int E_after  = 0;
 
-	for(int n=0; n<2*D; n++){
+	for(unsigned short n=0; n<2*D; n++)
+	{
+		if((spinstate == nb[n])){
+			
+			if(n == 4 || n == 5){
+				E_before += J_OUT;
+				
+				if (conex && n == 4)
+					E_before += J_EXT - J_OUT;
+				if(n == 5 && nl[5])
+					E_before += J_EXT - J_OUT;
+			}
+			else{
+				E_before += J_IN;
+			}
 
-		E_before += H * spinstate;
+		}
 		
-		if(n != 4 && n != 5)
-			E_before += J_IN * spinstate * nb[n];
-		else{
+		if(newstate == nb[n]){
+			if(n == 4 || n == 5){
+				E_after += J_OUT;
+				
+				if (conex && n == 4)
+					E_after += J_EXT - J_OUT;
+				if(n == 5 && nl[5])
+					E_after += J_EXT - J_OUT;
+			}
+			else{
+				E_after += J_IN;
+			}
 
-			if (conex || nl[5])
-				E_before += J_PB * spinstate * nb[n];
-			else
-				E_before += J_OU * spinstate * nb[n];
 		}
-
-		E_after  += H * newstate;
-
-		if(n != 4 && n != 5)
-			E_after += J_IN * newstate * nb[n];
-		else{
-
-			if (conex || nl[5])
-				E_after += J_PB * newstate * nb[n];
-			else
-				E_after += J_OU * newstate * nb[n];
-		}
+		
 	}
+	
+	E_before -= H * spinstate;
+	E_after -= H * newstate;
 
 	// acceptance probability:
-	int dE = E_before - E_after;
+	float dE = __int2float_rn(E_before - E_after);
 	float pAccept = __expf(-beta*dE);
 
 	if(TauswortheLCRNG(z1, z2, z3, z) <= pAccept)
@@ -163,6 +167,7 @@ __global__ void runMetropolis(int *seeds, int* spins, unsigned* neighbors, unsig
 
 		deltaE[threadIdx.x] = E_before - E_after;	// note energy difference
 	}
+
 
 	// remember locally in block for calculation of magnetization:
 	blockSpins[threadIdx.x] = spinstate;
@@ -176,86 +181,62 @@ __global__ void runMetropolis(int *seeds, int* spins, unsigned* neighbors, unsig
 
 	__syncthreads();
 
-
 	// sum up this block's energy delta and magnetization:
 	if(threadIdx.x == 0)
 	{
 		int blockEnergyDiff = 0;
 		int M = 0;
-		
 
-		for(unsigned i=0; i<blockDim.x; i++)
-		{
+		for(unsigned i=0; i<blockDim.x; i++){
 			blockEnergyDiff += deltaE[i];
-
-			if(blockSpins[i] == -1){
-				M -= 1;
-				
-			}
-			else{
-				M += 1;
-				
-			}
+			M += 2*blockSpins[i]-1;		//mapping to the Ising model
 		}
 
 		energyDifferences[blockIdx.x] += blockEnergyDiff;
 		magnetization[blockIdx.x] = M;
-		
 	}
 }
 
 
-
-/******************************
- *  HOST FUNCTION (CPU PART)  *
- ******************************/
 
 int main(int argc, char const **argv)
 {
 	int args = 1;
 
 	char name[30];
-	char log_file[30];
 
 	// variable responsible for storing concentration
     float x = (argc > args)?(atof(argv[args])):(0.23);
-    args++;
+    args++; 
+	
+	// variable responsible for storing field
+	int H = (argc > args)?(atoi(argv[args])):(0);
+	args++;
 
-    
-    int H = (argc > args)?(atof(argv[args])):(0);
-    args++;
-
-
-	sprintf(name, "x=%0.2fH=%0.2f.dat", x, H / 100.0);
-	sprintf(log_file, "x=%0.2fH=%0.2f.log", x, H / 100.0);
-    std::ofstream lg(log_file);
+	sprintf(name, "FCx%0.2fH%0.2f.dat", x,H*0.01);
+    std::ofstream lg("log_file");
 	std::ofstream dt(name);
 
-	
-
-	
-	lg << "Sweep in temperature (T_min = " << 0.00 << ", T_max = " << 400.00 << "), fixed field in H = " << H / 100.0 << std::endl;
-	lg << "Author: William Carreras Oropesa" << std::endl;
-	lg << "Simulation data" << std::endl;
+	lg << "Information data" << std::endl;
 	lg << "L = " << L << std::endl;
 	lg << "D = " << D << std::endl;
 	lg << "N = " << N << std::endl;
-	lg << "J_IN = " << J_IN / 100.0 << std::endl;
-	lg << "J_OU = " << J_OU / 100.0 << std::endl;
-	lg << "J_PB = " << J_PB / 100.0 << std::endl;
-	lg << "N_SWEEPS = " << N_SWEEPS << std::endl;
+	lg << "Q = " << Q << std::endl;
+	lg << "J_in = " << J_IN << std::endl;
+	lg << "J_out = " << J_OUT << std::endl;
+	lg << "J_ext = " << J_EXT << std::endl;
+	lg << "x = " << x << std::endl;
 
     srand48(time(NULL));
 
 	// each spin has value 0,..,Q-1
-	int spins[N];
-	bool contrt[N];
-    
+	unsigned short spins[N];
+    bool contrt[N];
+
 	// calculate lattice volume elements:
 	unsigned volume[D];
-
-	for(unsigned i=0; i<=D; i++){
-		
+	for(unsigned i=0; i<=D; i++)
+	{
 		if(i == 0)
 			volume[i] = 1;
 		else
@@ -263,36 +244,39 @@ int main(int argc, char const **argv)
 	}	
 
 
-	/* Determine the "checkerboard color" (black or white) for each site and
-	   initialise lattice with random spin states: */
+	/* 
+	Determine the "checkerboard color" (black or white) for each site and
+	initialise lattice with random spin states: 
+	*/
 	unsigned w=0, b=0;
 	unsigned white[N/2], black[N/2];	// store ids of white/black sites
 
-	for(unsigned i=0; i<N; i++){
-		
+	for(unsigned i=0; i<N; i++)
+	{
 		// Sum of all coordinates even or odd? -> gives checkerboard color
 		int csum = 0;
 		for(int k=D-1; k>=0; k--)
 			csum += ceil((i+1.0)/volume[k]) - 1;
 
-		if((csum%2) == 0){	// white
-		
+		if((csum%2) == 0)	// white
+		{
 			white[w] = i;
 			w++;
 		}
-		else{				// black
-
+		else				// black
+		{
 			black[b] = i;
 			b++;
 		}
 
 		// random spin state:
-		spins[i] = 2 * floor(2 * drand48()) - 1;
+		
+		spins[i] = floor(drand48() * Q);
+
         contrt[i] = false;
 	}
 
-
-	int n_ele = int(N * x);
+    int n_ele = int(N * x);
     int n = 0;
     
     while(n < n_ele){
@@ -300,7 +284,6 @@ int main(int argc, char const **argv)
         unsigned index = static_cast<unsigned>(floor(N * drand48()));
         
         if(!contrt[index]){
-           	
            	contrt[index] = true;
            	n++;
 		}            	
@@ -316,26 +299,26 @@ int main(int argc, char const **argv)
 	unsigned neighbors[2*D*N];
 
 	// calculate neighborhood table:
-	for(unsigned i=0; i<N; i++){
-	
-		int c=0;
+	for(unsigned i=0; i<N; i++)
+	{
+		unsigned short c=0;
 
-		for(int dim=0; dim<D; dim++){	// dimension loop
-		
-			for(short dir=-1; dir<=1; dir+=2){		// two directions in each dimension
-			
+		for(unsigned short dim=0; dim<D; dim++)	// dimension loop
+		{
+			for(short dir=-1; dir<=1; dir+=2)	// two directions in each dimension
+			{
 				// neighbor's id in spin list:
 				int npos = i + dir * volume[dim];
 
 				// periodic boundary conditions:
-				int test = (i % volume[dim + 1]) + dir * volume[dim];
+				int test = (i % volume[dim+1]) + dir*volume[dim];
 
 				if(test < 0)
-					npos += volume[dim + 1];
-				else if(test >= volume[dim + 1])
-					npos -= volume[dim + 1];
+					npos += volume[dim+1];
+				else if(test >= volume[dim+1])
+					npos -= volume[dim+1];
 				
-				neighbors[2 * D * i + c] = npos;
+				neighbors[2*D*i + c] = npos;
 				c++;
 			}
 		}
@@ -343,39 +326,41 @@ int main(int argc, char const **argv)
 
 
 	// create 4 seed values for each thread:
-	unsigned seeds[4 * N / 2];
-
+	unsigned seeds[4*N/2];
 	for(unsigned i=0; i<4*N/2; i++)
-		seeds[i] = static_cast<unsigned>(4294967295 * drand48());
-	
+	{
+		 seeds[i] = static_cast<unsigned>(4294967295 * drand48());
+	}
 
 
 	// calculate energy (Potts model)
 	int E = 0;
-
-	for(unsigned i=0; i<N; i++){	
-		
-		for(unsigned j=0; j<2*D; j++){
-		
-			if(j != 4 && j !=5)
-				E -= J_IN * spins[i] * spins[neighbors[2*D*i + j]];
-			
-			else{
+	for(unsigned i=0; i<N; i++)	
+	{
+		for(unsigned j=0; j<2*D; j++)
+		{
+			if(spins[i] == spins[neighbors[2*D*i + j]]){
 				
-				if(contrt[i] || contrt[neighbors[2*D*i + j]])
-					E -= J_PB * spins[i] * spins[neighbors[2*D*i + j]];
-				else
-					E -= J_OU * spins[i] * spins[neighbors[2*D*i + j]];
+				if(j == 4 || j == 5){
+					E-= J_OUT;
+					
+					if(j == 4 && contrt[i])
+						E -= -120 - J_OUT;
+					if(j== 5 && contrt[neighbors[2*D*i + j]])
+						E -= -120 - J_OUT;				
+				}
+				else{
+					E -= J_IN;				
+				}
+
 			}
 		}
 	}
-
 	E /= 2; // count each interaction only once
 
-	// field energy
-	for (int i = 0; i <= N; i++)
-		E -= H * spins[i];
-
+	
+	for(int i=0; i<N;i++)
+		E += H*spins[i];
 
 	// copy seeds to GPU:
 	int *devPtrSeeds;
@@ -383,7 +368,7 @@ int main(int argc, char const **argv)
 	cudaMemcpy(devPtrSeeds, &seeds, sizeof(seeds), cudaMemcpyHostToDevice);
 
 	// copy spins to GPU:
-	int *devPtrSpins;
+	unsigned short *devPtrSpins;
 	cudaMalloc((void**)&devPtrSpins, sizeof(spins));
 	cudaMemcpy(devPtrSpins, &spins, sizeof(spins), cudaMemcpyHostToDevice);
 
@@ -410,94 +395,86 @@ int main(int argc, char const **argv)
 	int *devPtrEnergyDifferences;
 	cudaMalloc((void**)&devPtrEnergyDifferences, sizeof(energyDifferences));
 	cudaMemcpy(devPtrEnergyDifferences, &energyDifferences, sizeof(energyDifferences), cudaMemcpyHostToDevice);
-
+	
+	// each block calculates block's magnetization:
+	int magnetization_black[N_BLOCKS];
+	int *devPtrMagnetization_black;
+	cudaMalloc((void**)&devPtrMagnetization_black, sizeof(magnetization_black));
+	
 	// each block calculates block's magnetization:
 	int magnetization_white[N_BLOCKS];
 	int *devPtrMagnetization_white;
 	cudaMalloc((void**)&devPtrMagnetization_white, sizeof(magnetization_white));
 
-	int magnetization_black[N_BLOCKS];
-	int *devPtrMagnetization_black;
-	cudaMalloc((void**)&devPtrMagnetization_black, sizeof(magnetization_black));
-
-
-
 	int E_before_simulation = E;
-	long long M;	// magnetization
+	long long M = 0;
 
-
-	
-
-	for(float T = 500.00; T >= 0.00; T -= 5.00){
-	
+	for(float T = 300.0; T >= 0.0; T -= 2)
+	{
 		double sum_e 		= 0;
 		double sum_ee		= 0;
-		double sum_m 		= 0;
-		double sum_mm 		= 0;
-		
+		double sum_m 		= 0.0;
+		double sum_mm 		= 0.0;
+		double sum_mmmm 	= 0.0;
 
-		for(unsigned i=0; i<N_SWEEPS; i++){
-			
-			// White spins:
+		for(unsigned i=0; i<N_SWEEPS; i++)
+		{
+				// White spins:
 			runMetropolis<<<N_BLOCKS, N_THREADS_PER_BLOCK>>>(devPtrSeeds, devPtrSpins, devPtrNeighbors, devPtrWhite, 
-								devPtrEnergyDifferences, devPtrMagnetization_white, devPtrContrt,1.0f/T, H);
+								devPtrEnergyDifferences, devPtrContrt,devPtrMagnetization_white, 1.0f/T, H);
 
 			// Black spins:
 			runMetropolis<<<N_BLOCKS, N_THREADS_PER_BLOCK>>>(devPtrSeeds, devPtrSpins, devPtrNeighbors, devPtrBlack, 
-								devPtrEnergyDifferences, devPtrMagnetization_black, devPtrContrt ,1.0f/T, H);
-			
-			if(i >= 0.2*N_SWEEPS){
-					
+									devPtrEnergyDifferences, devPtrContrt ,devPtrMagnetization_black, 1.0f/T, H);
+		
+			// Sum up energy after a thermalization time for mean energy value:
+			if(i >= 0.2*N_SWEEPS)
+			{
 				// get energy changes from the GPU:
 				cudaMemcpy(&energyDifferences, devPtrEnergyDifferences, sizeof(energyDifferences), cudaMemcpyDeviceToHost);
-
+				
 				// get magnetization from the GPU:
 				cudaMemcpy(&magnetization_white, devPtrMagnetization_white, sizeof(magnetization_white), cudaMemcpyDeviceToHost);
-
 				cudaMemcpy(&magnetization_black, devPtrMagnetization_black, sizeof(magnetization_black), cudaMemcpyDeviceToHost);
+				E = E_before_simulation;
+				M=0;
 				
-					
-
-					E = E_before_simulation;
-					M = 0;
-
-					for(unsigned t=0; t<N_BLOCKS; t++){	// take energy changes into account
-				
-						E += energyDifferences[t];
-						M += magnetization_white[t] + magnetization_black[t];
-					}
-
-					double m = static_cast<double>(M) / static_cast<double>(N);
-					double e = static_cast<double>(E) / static_cast<double>(N);
-
-					sum_e 	 += e;
-					sum_ee 	 += e*e;
-				
-					sum_m 	 += m;
-					sum_mm   += m*m;
+				for(unsigned t=0; t<N_BLOCKS; t++){	// take energy changes into account
+					E += energyDifferences[t];
+					M += magnetization_white[t] + magnetization_black[t];
 				}
+
+				double m = static_cast<double>(M) / static_cast<double>(N);
+				double e = static_cast<double>(E) / static_cast<double>(N);
+
+				sum_e 	 += e;
+				sum_ee 	 += e*e;
+				sum_m 	 += m;
+				sum_mm 	 += m*m;
+				sum_mmmm += m*m*m*m;
 			}
-
-			double beta = 1.0f / T;
-
-			double mE_Ising  = sum_e / (0.8*N_SWEEPS);
-			double mEE_Ising = sum_ee / (0.8*N_SWEEPS);
-			double C_Ising 	 = beta*beta*(mEE_Ising - mE_Ising*mE_Ising);
-
-			C_Ising *= static_cast<double>(N);
-		
-		
-			double m_M    = static_cast<double>(sum_m) / (0.8*N_SWEEPS);
-			double m_MM   = static_cast<double>(sum_mm) / (0.8*N_SWEEPS);
-
-
-			// magnetization:
-			double chi_uniform = beta*(m_MM - m_M*m_M);
-		
-
-			dt << T  << "\t" << mE_Ising  << "\t" << C_Ising << "\t" << m_M << "\t" << chi_uniform << std::endl;
 		}
-	
+
+		double beta = 1.0f / T;
+
+		double mE_Potts  = sum_e / (0.8*N_SWEEPS);
+		double mEE_Potts = sum_ee / (0.8*N_SWEEPS);
+		double C_Potts 	 = beta*beta*(mEE_Potts - mE_Potts*mE_Potts);
+
+		
+		C_Potts *= static_cast<double>(N);
+		
+		double mM  = static_cast<double>(sum_m) / (0.8 * N_SWEEPS);
+		double mMM  = static_cast<double>(sum_mm) / (0.8 * N_SWEEPS);
+		double mMMMM = static_cast<double>(sum_mmmm) / (0.8 * N_SWEEPS);
+
+
+		//Binder Parameter:
+		double U4 = 1.0 - mMMMM / (3.0 * mMM*mMM);
+
+
+		dt << 2*T << "\t" << mE_Potts*0.1 << "\t" << C_Potts << "\t" << mM << "\t" <<U4 << std::endl;
+	}
 
 	cudaFree(devPtrSeeds);
 	cudaFree(devPtrSpins);
@@ -511,8 +488,6 @@ int main(int argc, char const **argv)
 
 	lg.close();
 	dt.close();
-
-    
 
 	return 0;
 }
